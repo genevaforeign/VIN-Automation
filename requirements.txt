@@ -1,0 +1,6 @@
+pywinauto>=0.6.8
+selenium>=4.0
+webdriver-manager>=4.0
+beautifulsoup4>=4.12
+requests>=2.31
+openpyxl>=3.1
