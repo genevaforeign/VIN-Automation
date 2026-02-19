@@ -28,6 +28,39 @@ HEADERS = {
     ),
 }
 
+# Make aliases: VINMatchPro name → Car-Part.com name
+_MAKE_ALIASES = {
+    'Mercedes-Benz': 'Mercedes',
+}
+
+# Mercedes models that don't follow the "{prefix} Class" pattern on Car-Part.com
+_MERCEDES_MODEL_OVERRIDES = {
+    'ML':     'ML Series',
+    'CLK':    'CLK',
+    'CLS':    'CLS',
+    'SLK':    'SLK',
+    'SLR':    'SLR',
+    'SLS':    'SLS',
+    'AMG GT': 'AMG GT',
+    'Metris': 'Metris',
+}
+
+
+def _normalize_for_carpart(make: str, model: str) -> str:
+    """Return the Car-Part.com userModel string for a given VINMatchPro make/model."""
+    norm_make = _MAKE_ALIASES.get(make, make)
+
+    if make == 'Mercedes-Benz':
+        # Model is like "A 220", "GLE 450", "AMG GT 63" — extract letter prefix
+        m = re.match(r'^([A-Za-z]+(?:\s+[A-Za-z]+)?)', model)
+        if m:
+            prefix = m.group(1).strip()
+            suffix = _MERCEDES_MODEL_OVERRIDES.get(prefix, f'{prefix} Class')
+            return f'{norm_make} {suffix}'
+
+    return f'{norm_make} {model}'
+
+
 # Common parts to search for
 DEFAULT_PARTS = [
     'Engine',
@@ -69,7 +102,9 @@ def _get_homepage_hidden_fields(session: requests.Session) -> dict:
     return fields
 
 
-def _handle_interchange(session: requests.Session, soup: BeautifulSoup) -> BeautifulSoup:
+def _handle_interchange(
+    session: requests.Session, soup: BeautifulSoup, original_data: dict = None
+) -> BeautifulSoup:
     """If the response is an interchange selection page, pick the first option and submit."""
     radios = soup.find_all('input', {'type': 'radio'})
     if not radios:
@@ -79,17 +114,20 @@ def _handle_interchange(session: requests.Session, soup: BeautifulSoup) -> Beaut
     if not form:
         return soup
 
-    data = {}
+    # Start with original data so fields like userDate aren't lost
+    data = dict(original_data) if original_data else {}
+
     for inp in form.find_all('input', {'type': 'hidden'}):
         name = inp.get('name', '')
         if name:
             data[name] = inp.get('value', '')
 
-    # Select the first non-None radio value
+    # Select the first non-None radio value using the actual field name
     for r in radios:
         val = r.get('value', '')
+        name = r.get('name', 'userInterchange')
         if val and val != 'None':
-            data['userInterchange'] = val
+            data[name] = val
             break
 
     resp = session.post(SEARCH_URL, data=data, timeout=30)
@@ -200,7 +238,7 @@ def search_parts(
     # Get homepage hidden fields (needed for valid session)
     hidden_fields = _get_homepage_hidden_fields(session)
 
-    model_value = f'{make} {model}'
+    model_value = _normalize_for_carpart(make, model)
     all_results = []
 
     for part_name in parts:
@@ -229,7 +267,7 @@ def search_parts(
             continue
 
         # Handle interchange selection if needed
-        soup = _handle_interchange(session, soup)
+        soup = _handle_interchange(session, soup, data)
 
         listings = _parse_results_table(soup, part_name)
         all_results.extend(listings)
