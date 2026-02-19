@@ -203,11 +203,15 @@ def _parse_results_table(soup: BeautifulSoup, search_part: str) -> list[dict]:
             # Column 3: Grade
             grade = cell_texts[3] if len(cell_texts) > 3 else ''
 
+            # Column 4: Stock number
+            stock_num = cell_texts[4] if len(cell_texts) > 4 else ''
+
             listing = {
                 'part_name': search_part,
                 'year': year,
                 'description': description,
                 'grade': grade,
+                'stock_num': stock_num,
                 'price': price,
                 'vendor': vendor,
                 'location': location,
@@ -219,6 +223,103 @@ def _parse_results_table(soup: BeautifulSoup, search_part: str) -> list[dict]:
         break  # Found the results table, stop looking
 
     return results
+
+
+def search_single_part(
+    part_name: str,
+    year: str,
+    make: str,
+    model: str,
+    zip_code: str,
+    session: requests.Session = None,
+    hidden_fields: dict = None,
+) -> dict:
+    """Search Car-Part.com for a single part and return deduplicated price stats.
+
+    Deduplication is performed by (vendor, stock#): when the same yard lists the
+    same stock number more than once, only the first occurrence is counted so that
+    duplicate listings from one yard do not skew the average.
+
+    Args:
+        part_name:     The part description to search for (e.g. "Hood").
+        year:          Vehicle model year (e.g. "2015").
+        make:          Vehicle make (e.g. "Toyota").
+        model:         Vehicle model (e.g. "Camry").
+        zip_code:      Buyer zip code for proximity search.
+        session:       Optional existing requests.Session to reuse.
+        hidden_fields: Optional hidden form fields already fetched from the homepage.
+
+    Returns:
+        {
+            'part_name':      str,
+            'avg_price':      float | None,
+            'low_price':      float | None,
+            'listing_count':  int,
+        }
+    """
+    if session is None:
+        session = requests.Session()
+        session.headers.update(HEADERS)
+
+    if hidden_fields is None:
+        hidden_fields = _get_homepage_hidden_fields(session)
+
+    model_value = _normalize_for_carpart(make, model)
+
+    data = {
+        'userDate': str(year),
+        'userModel': model_value,
+        'userPart': part_name,
+        'userLocation': 'All States',
+        'userPreference': 'zip',
+        'userZip': zip_code,
+    }
+    data.update(hidden_fields)
+
+    try:
+        resp = session.post(SEARCH_URL, data=data, timeout=30)
+        resp.raise_for_status()
+    except Exception as exc:
+        print(f'    Warning: search failed for "{part_name}": {exc}')
+        return {'part_name': part_name, 'avg_price': None, 'low_price': None, 'listing_count': 0}
+
+    soup = BeautifulSoup(resp.text, 'html.parser')
+
+    if 'INVALID' in soup.get_text():
+        return {'part_name': part_name, 'avg_price': None, 'low_price': None, 'listing_count': 0}
+
+    soup = _handle_interchange(session, soup, data)
+    listings = _parse_results_table(soup, part_name)
+
+    # Deduplicate by (vendor, stock#)
+    seen = set()
+    unique_listings = []
+    for listing in listings:
+        key = (listing.get('vendor', ''), listing.get('stock_num', ''))
+        if key not in seen:
+            seen.add(key)
+            unique_listings.append(listing)
+
+    # Extract numeric prices
+    prices = []
+    for listing in unique_listings:
+        price_text = listing.get('price', '')
+        price_match = re.search(r'([\d,.]+)', price_text.replace('$', ''))
+        if price_match:
+            try:
+                prices.append(float(price_match.group(1).replace(',', '')))
+            except ValueError:
+                pass
+
+    avg_price = (sum(prices) / len(prices)) if prices else None
+    low_price = min(prices) if prices else None
+
+    return {
+        'part_name': part_name,
+        'avg_price': avg_price,
+        'low_price': low_price,
+        'listing_count': len(unique_listings),
+    }
 
 
 def search_parts(

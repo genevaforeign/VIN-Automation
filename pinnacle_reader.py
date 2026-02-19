@@ -205,6 +205,32 @@ class JABReader:
                 return ci.name or self._get_cell_text(vm, cell_info.accessibleContext) or ''
         return ''
 
+    def open_selected_vehicle(self):
+        """Double-click the currently selected row to open the MVR window."""
+        hwnd = self._find_pinnacle_hwnd()
+        vm, ac = self._connect_jab(hwnd)
+        table_ctx = self._find_table(vm, ac)
+
+        if not table_ctx:
+            raise RuntimeError('Could not find the vehicles table in Pinnacle.')
+
+        ctx = self.jab.getAccessibleSelectionFromContext(vm, table_ctx, 0)
+        if not ctx:
+            raise RuntimeError('No row is selected in the Find Vehicles table.')
+
+        ci = AccessibleContextInfo()
+        if not self.jab.getAccessibleContextInfo(vm, ctx, ctypes.byref(ci)):
+            raise RuntimeError('Could not get context info for selected row.')
+
+        x = ci.x + ci.width // 2
+        y = ci.y + ci.height // 2
+        user32 = ctypes.windll.user32
+        user32.SetCursorPos(x, y)
+        for _ in range(2):   # double-click
+            user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN
+            user32.mouse_event(0x0004, 0, 0, 0, 0)  # LEFTUP
+            time.sleep(0.05)
+
     def read_all_vins(self) -> list[dict]:
         """Read all vehicle rows from the Find Vehicles table.
 

@@ -8,14 +8,38 @@ pulls parts pricing from Car-Part.com, and exports results to CSV/Excel.
 import argparse
 import csv
 import os
+import re
 import sys
+import time
 from datetime import datetime
 
 import openpyxl
+import requests
 
-from pinnacle_reader import read_vin_from_pinnacle, validate_vin
+from pinnacle_reader import JABReader, read_vin_from_pinnacle, validate_vin
 from vinmatchpro_decoder import decode as decode_vin
-from carpart_scraper import search as search_parts
+from carpart_scraper import (
+    load_config as carpart_load_config,
+    search as search_parts,
+    search_single_part,
+    _get_homepage_hidden_fields,
+)
+from mvr_reader import open_mvr_and_read_parts
+
+
+def _clean_search_term(term: str) -> str:
+    """Strip Pinnacle-internal suffixes from a Hollander category name before searching.
+
+    Removes:
+    - Everything after a semicolon  ("Chassis Brain Box; on-board…" → "Chassis Brain Box")
+    - ", ID XXXX…" suffixes         ("Heat/AC Controller rear, ID 4G0…" → "Heat/AC Controller rear")
+    - Trailing 4+ digit numbers     ("Fuel Tank 59452" → "Fuel Tank")
+    - Trailing punctuation left over after stripping
+    """
+    term = term.split(';')[0]
+    term = re.sub(r',\s*ID\s+\S+.*$', '', term)
+    term = re.sub(r'\s+\d{4,}\s*$', '', term)
+    return term.strip().rstrip(',').strip()
 
 
 def load_config():
@@ -140,6 +164,15 @@ def main():
         choices=['csv', 'excel'],
         help='Override output format (csv or excel)',
     )
+    parser.add_argument(
+        '--unpriced',
+        action='store_true',
+        help=(
+            'Open the selected vehicle\'s MVR, read un-priced parts with Hollander '
+            'interchange numbers, look up market prices on Car-Part.com, and export '
+            'a suggested-price report.'
+        ),
+    )
     args = parser.parse_args()
 
     config = load_config()
@@ -147,6 +180,115 @@ def main():
     output_format = args.format or config['format']
 
     os.makedirs(output_dir, exist_ok=True)
+
+    # --unpriced workflow: open MVR, read Parts tab, price each un-priced part
+    if args.unpriced:
+        print('Reading selected VIN from Pinnacle...')
+        try:
+            reader = JABReader()
+            vin = reader.read_selected_vin()
+            print(f'  VIN: {vin}')
+        except RuntimeError as exc:
+            print(f'ERROR: {exc}', file=sys.stderr)
+            sys.exit(1)
+
+        print('Decoding VIN...')
+        try:
+            vehicle = decode_vin(vin)
+            print(f"  Vehicle: {vehicle.get('year', '?')} {vehicle.get('make', '?')} {vehicle.get('model', '?')}")
+        except Exception as exc:
+            print(f'ERROR decoding VIN: {exc}', file=sys.stderr)
+            sys.exit(1)
+
+        print('Opening MVR (double-clicking selected row)...')
+        try:
+            reader.open_selected_vehicle()
+        except RuntimeError as exc:
+            print(f'ERROR: {exc}', file=sys.stderr)
+            sys.exit(1)
+
+        print('Waiting for MVR to load...')
+        time.sleep(3)
+
+        print('Reading un-priced parts from MVR Parts tab...')
+        try:
+            parts = open_mvr_and_read_parts()
+            print(f'  Found {len(parts)} un-priced part(s) with Hollander numbers.')
+        except RuntimeError as exc:
+            print(f'ERROR reading MVR parts: {exc}', file=sys.stderr)
+            sys.exit(1)
+
+        if not parts:
+            print('No un-priced parts with Hollander numbers found. Nothing to export.')
+            sys.exit(0)
+
+        print('Looking up market prices on Car-Part.com...')
+        carpart_cfg = carpart_load_config()
+        zip_code = carpart_cfg['zip_code']
+
+        session = requests.Session()
+        from carpart_scraper import HEADERS
+        session.headers.update(HEADERS)
+        hidden = _get_homepage_hidden_fields(session)
+
+        rows = []
+        for part in parts:
+            # Prefer the extracted part name; fall back to the Hollander category name
+            # (col 0 — e.g. "2nd Seat (Rear Seat)") which maps cleanly to Car-Part.com terms.
+            raw_term = part['part_name'] or part.get('category', '')
+            search_term = _clean_search_term(raw_term) if raw_term else ''
+            print(f"  Searching: {search_term or part['description'][:60]}")
+
+            if search_term:
+                result = search_single_part(
+                    search_term,
+                    vehicle.get('year', ''),
+                    vehicle.get('make', ''),
+                    vehicle.get('model', ''),
+                    zip_code,
+                    session=session,
+                    hidden_fields=hidden,
+                )
+            else:
+                result = {'avg_price': None, 'low_price': None, 'listing_count': 0}
+
+            if result['listing_count']:
+                print(
+                    f"    avg=${result['avg_price']:.2f}  "
+                    f"low=${result['low_price']:.2f}  "
+                    f"({result['listing_count']} listings)"
+                )
+            else:
+                print('    No listings found.')
+
+            if not search_term:
+                notes = 'Description unclear – manual review'
+            elif result['listing_count'] == 0:
+                notes = 'No Car-Part listings'
+            else:
+                notes = ''
+
+            rows.append({
+                'vin': vin,
+                'year': vehicle.get('year', ''),
+                'make': vehicle.get('make', ''),
+                'model': vehicle.get('model', ''),
+                'stock_num': part['stock_num'],
+                'hollander': part['hollander'],
+                'part_name': search_term or part['description'][:60],
+                'grade': part['grade'],
+                'location': part['location'],
+                'avg_price': f"${result['avg_price']:.2f}" if result['avg_price'] is not None else '',
+                'low_price': f"${result['low_price']:.2f}" if result['low_price'] is not None else '',
+                'listing_count': result['listing_count'],
+                'notes': notes,
+            })
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filepath = os.path.join(output_dir, f'unpriced_{timestamp}.csv')
+        export_csv(rows, filepath)
+        print(f'\nDone. {len(rows)} part(s) written to {filepath}')
+        return
 
     # Determine which VINs to process
     vins = []
