@@ -24,7 +24,7 @@ from carpart_scraper import (
     search_single_part,
     _get_homepage_hidden_fields,
 )
-from mvr_reader import open_mvr_and_read_parts
+from mvr_reader import open_mvr_and_read_parts, get_open_mvr_titles
 
 
 def _clean_search_term(term: str) -> str:
@@ -201,6 +201,7 @@ def main():
             sys.exit(1)
 
         print('Opening MVR (double-clicking selected row)...')
+        pre_click_titles = get_open_mvr_titles()
         try:
             reader.open_selected_vehicle()
         except RuntimeError as exc:
@@ -212,7 +213,7 @@ def main():
 
         print('Reading un-priced parts from MVR Parts tab...')
         try:
-            parts = open_mvr_and_read_parts()
+            parts = open_mvr_and_read_parts(pre_click_titles=pre_click_titles)
             print(f'  Found {len(parts)} un-priced part(s) with Hollander numbers.')
         except RuntimeError as exc:
             print(f'ERROR reading MVR parts: {exc}', file=sys.stderr)

@@ -225,6 +225,10 @@ class JABReader:
         x = ci.x + ci.width // 2
         y = ci.y + ci.height // 2
         user32 = ctypes.windll.user32
+        # Bring Find Vehicles to the foreground so the click isn't intercepted
+        # by another window (e.g. an already-open MVR) that may be covering it.
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.2)
         user32.SetCursorPos(x, y)
         for _ in range(2):   # double-click
             user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN

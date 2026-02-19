@@ -90,11 +90,19 @@ class MVRReader:
             else:
                 time.sleep(0.01)
 
-    def _find_mvr_hwnd(self, timeout=15):
-        """Poll for a SunAwtFrame whose title starts with 'Vehicle:'.
+    def _find_mvr_hwnd(self, timeout=15, pre_click_titles: dict = None):
+        """Poll for an MVR window that is new or has a changed title since the click.
 
-        Raises RuntimeError if the window does not appear within *timeout* seconds.
+        *pre_click_titles* is a {hwnd: title} snapshot taken before the
+        double-click (from get_open_mvr_titles()).  A window qualifies if:
+          - its HWND was not in the snapshot (brand-new window), OR
+          - its HWND was in the snapshot but its title has changed (Pinnacle
+            reused the window for the newly opened vehicle).
+
+        If *pre_click_titles* is None, any 'Vehicle:' window is accepted
+        (original behaviour — safe when no MVR is already open).
         """
+        old = pre_click_titles or {}
         deadline = time.time() + timeout
         while time.time() < deadline:
             desktop = Desktop(backend='uia')
@@ -102,13 +110,20 @@ class MVRReader:
                 try:
                     title = w.window_text()
                     cls = w.element_info.class_name
-                    if 'SunAwtFrame' in cls and title.startswith('Vehicle:'):
-                        return w.handle
+                    if 'SunAwtFrame' not in cls or not title.startswith('Vehicle:'):
+                        continue
+                    hwnd = w.handle
+                    # New window not seen before the click
+                    if hwnd not in old:
+                        return hwnd
+                    # Same window but title changed → Pinnacle loaded the new vehicle
+                    if old[hwnd] != title:
+                        return hwnd
                 except Exception:
                     continue
             time.sleep(0.5)
         raise RuntimeError(
-            'MVR window ("Vehicle: …") did not appear within '
+            'The MVR window did not update within '
             f'{timeout} seconds. Make sure the vehicle was opened in Pinnacle.'
         )
 
@@ -213,7 +228,7 @@ class MVRReader:
                         return result
         return None
 
-    def read_unpriced_parts(self) -> list[dict]:
+    def read_unpriced_parts(self, pre_click_titles: dict = None) -> list[dict]:
         """Open the MVR window, navigate to the Parts tab, and return un-priced parts.
 
         A part is included if:
@@ -223,7 +238,7 @@ class MVRReader:
         Returns a list of dicts with keys:
           description, part_name, hollander, price, location, grade, stock_num
         """
-        hwnd = self._find_mvr_hwnd()
+        hwnd = self._find_mvr_hwnd(pre_click_titles=pre_click_titles)
         vm, ac = self._connect_jab(hwnd)
 
         self._click_parts_tab(vm, ac)
@@ -282,7 +297,26 @@ class MVRReader:
         return parts
 
 
-def open_mvr_and_read_parts() -> list[dict]:
-    """Connect to the open MVR window and return all un-priced parts."""
+def get_open_mvr_titles() -> dict:
+    """Return {hwnd: title} for any MVR ('Vehicle: …') windows currently open."""
+    titles = {}
+    desktop = Desktop(backend='uia')
+    for w in desktop.windows():
+        try:
+            title = w.window_text()
+            if 'SunAwtFrame' in w.element_info.class_name and title.startswith('Vehicle:'):
+                titles[w.handle] = title
+        except Exception:
+            pass
+    return titles
+
+
+def open_mvr_and_read_parts(pre_click_titles: dict = None) -> list[dict]:
+    """Connect to a newly opened (or updated) MVR window and return all un-priced parts.
+
+    Pass *pre_click_titles* (from get_open_mvr_titles()) so the reader can
+    detect whether Pinnacle opened a brand-new window OR reused an existing
+    one with an updated title.
+    """
     reader = MVRReader()
-    return reader.read_unpriced_parts()
+    return reader.read_unpriced_parts(pre_click_titles=pre_click_titles)
