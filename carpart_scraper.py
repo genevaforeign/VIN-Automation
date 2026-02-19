@@ -138,73 +138,93 @@ def _handle_interchange(
 def _parse_results_table(soup: BeautifulSoup, search_part: str) -> list[dict]:
     """Parse the results table from a Car-Part.com search results page.
 
-    The results table has 8 columns:
-      [0] Year/Part/Model, [1] Description, [2] Damage Code,
-      [3] Part Grade, [4] Stock#, [5] US Price,
-      [6] Dealer Info, [7] Distance (miles)
+    Car-Part.com uses either a 7-column or 8-column layout depending on the part type.
+    7-col: YearPartModel | Description | PartGrade | Stock# | USPrice | Dealer Info | Distmile
+    8-col: YearPartModel | Description | DamageCode | PartGrade | Stock# | USPrice | Dealer Info | Distmile
+
+    Column positions are determined dynamically by reading the header row so that
+    layout changes don't break parsing.
     """
     results = []
 
-    # Find the table that has the header row with "YearPartModel"
+    # Canonical header names -> listing dict key
+    _HEADER_MAP = {
+        'description': 'description',
+        'partgrade':   'grade',
+        'stock#':      'stock_num',
+        'usprice':     'price',
+        'dealer info': 'dealer',
+        'dealerinfo':  'dealer',
+        'distmile':    'distance_miles',
+    }
+
     for table in soup.find_all('table'):
         rows = table.find_all('tr')
         if len(rows) < 2:
             continue
 
-        # Check if first row is the header
+        # Identify the header row
         first_cells = rows[0].find_all(['td', 'th'])
-        header_text = ''.join(c.get_text(strip=True) for c in first_cells).lower()
-        if 'yearpartmodel' not in header_text and 'usprice' not in header_text:
+        header_texts = [c.get_text(strip=True) for c in first_cells]
+        header_joined = ''.join(header_texts).lower()
+        if 'yearpartmodel' not in header_joined and 'usprice' not in header_joined:
+            continue
+
+        # Build col-index lookup from header
+        col_idx = {}
+        for i, h in enumerate(header_texts):
+            key = h.lower().strip()
+            if key in _HEADER_MAP:
+                col_idx[_HEADER_MAP[key]] = i
+
+        # Require at minimum price and dealer columns
+        if 'price' not in col_idx or 'dealer' not in col_idx:
             continue
 
         # Parse data rows (skip header row)
         for row in rows[1:]:
             cells = row.find_all('td')
-            if len(cells) < 6:
+            if len(cells) < len(header_texts):
                 continue
 
             cell_texts = [c.get_text(strip=True) for c in cells]
 
-            # Column 0: "2000HoodToyota 4Runner" -> parse year, part, model
-            col0 = cell_texts[0]
-            year_match = re.match(r'^(\d{4})', col0)
+            def _col(key, default=''):
+                idx = col_idx.get(key)
+                return cell_texts[idx] if idx is not None and idx < len(cell_texts) else default
+
+            # Column 0: "2017Fuel TankAudi A6" -> parse year
+            year_match = re.match(r'^(\d{4})', cell_texts[0])
             year = year_match.group(1) if year_match else ''
 
-            # Column 5: "$250actual" or "$Call"
-            price_text = cell_texts[5] if len(cell_texts) > 5 else ''
+            # Description
+            description = re.sub(
+                r'Estimated CO2e Savings:\s*\d+kg', '', _col('description')
+            ).strip()
+
+            # Grade and Stock#
+            grade = _col('grade')
+            stock_num = _col('stock_num')
+
+            # US Price — "$125actual" or "$Call"
+            price_text = _col('price')
             price_match = re.search(r'(\$[\d,.]+)', price_text)
             price = price_match.group(1) if price_match else price_text
 
-            # Column 6: Dealer info - extract yard name and phone
-            dealer_text = cell_texts[6] if len(cell_texts) > 6 else ''
-            # Try to extract yard name (text before "USA-" or "Can-")
+            # Dealer Info — extract yard name, location, phone
+            dealer_text = _col('dealer')
             yard_match = re.match(r'^(.+?)(?:USA-|Can-)', dealer_text)
             vendor = yard_match.group(1).strip() if yard_match else dealer_text[:60]
-            # Clean up vendor name - remove trailing suffixes
             for suffix in [' - PRP Freight, ARA, CDC', ' - PRP Freight, CDC', ' - CDC', ' - ARA']:
                 vendor = vendor.replace(suffix, '')
 
-            # Extract location
             loc_match = re.search(r'(?:USA|Can)-(\w+)\(([^)]+)\)', dealer_text)
             location = f'{loc_match.group(2)}, {loc_match.group(1)}' if loc_match else ''
 
-            # Extract phone
             phone_match = re.search(r'(\d[\d\-]{9,})', dealer_text)
             phone = phone_match.group(1) if phone_match else ''
 
-            # Column 7: Distance
-            distance = cell_texts[7] if len(cell_texts) > 7 else ''
-
-            # Column 1: Description
-            description = cell_texts[1] if len(cell_texts) > 1 else ''
-            # Remove CO2e savings text
-            description = re.sub(r'Estimated CO2e Savings:\s*\d+kg', '', description).strip()
-
-            # Column 3: Grade
-            grade = cell_texts[3] if len(cell_texts) > 3 else ''
-
-            # Column 4: Stock number
-            stock_num = cell_texts[4] if len(cell_texts) > 4 else ''
+            distance = _col('distance_miles')
 
             listing = {
                 'part_name': search_part,
