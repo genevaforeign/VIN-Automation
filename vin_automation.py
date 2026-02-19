@@ -38,7 +38,7 @@ def _clean_search_term(term: str) -> str:
     """
     term = term.split(';')[0]
     term = re.sub(r',\s*ID\s+\S+.*$', '', term)
-    term = re.sub(r'\s+\d{4,}\s*$', '', term)
+    term = re.sub(r'\s+\d{3,}\s*$', '', term)   # strip trailing Pinnacle part-type codes (3+ digits)
     return term.strip().rstrip(',').strip()
 
 
@@ -234,9 +234,10 @@ def main():
 
         rows = []
         for part in parts:
-            # Prefer the extracted part name; fall back to the Hollander category name
-            # (col 0 — e.g. "2nd Seat (Rear Seat)") which maps cleanly to Car-Part.com terms.
-            raw_term = part['part_name'] or part.get('category', '')
+            # Always prefer the Hollander category name (col 0) — it is the standardised
+            # interchange description that maps directly to Car-Part.com search terms.
+            # Fall back to the extracted part name only if the category is absent.
+            raw_term = part.get('category', '') or part['part_name']
             search_term = _clean_search_term(raw_term) if raw_term else ''
             print(f"  Searching: {search_term or part['description'][:60]}")
 

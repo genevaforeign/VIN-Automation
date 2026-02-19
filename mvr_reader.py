@@ -113,17 +113,28 @@ class MVRReader:
                     if 'SunAwtFrame' not in cls or not title.startswith('Vehicle:'):
                         continue
                     hwnd = w.handle
-                    # New window not seen before the click
+                    # Brand-new window
                     if hwnd not in old:
                         return hwnd
-                    # Same window but title changed → Pinnacle loaded the new vehicle
+                    # Same HWND but title changed → Pinnacle loaded the new vehicle
                     if old[hwnd] != title:
                         return hwnd
                 except Exception:
                     continue
             time.sleep(0.5)
+
+        # Timeout: the same vehicle was re-opened (title unchanged) or the window
+        # opened but the title update was missed.  Fall back to any open MVR window.
+        desktop = Desktop(backend='uia')
+        for w in desktop.windows():
+            try:
+                if 'SunAwtFrame' in w.element_info.class_name and w.window_text().startswith('Vehicle:'):
+                    return w.handle
+            except Exception:
+                continue
+
         raise RuntimeError(
-            'The MVR window did not update within '
+            'No MVR window ("Vehicle: …") found within '
             f'{timeout} seconds. Make sure the vehicle was opened in Pinnacle.'
         )
 
