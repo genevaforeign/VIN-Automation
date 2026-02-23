@@ -63,17 +63,35 @@ def _normalize_for_carpart(make: str, model: str) -> str:
 
 # Common parts to search for
 DEFAULT_PARTS = [
+    # Drivetrain
     'Engine',
     'Transmission',
+    'Transfer Case',
+    'Axle Shaft, Front',
+    'Axle Shaft, Rear',
+    'Differential Assembly, Front',
+    'Differential Assembly, Rear',
+    # Cooling / HVAC
+    'Radiator',
+    'A/C Compressor',
+    'A/C Condenser',
+    # Body
     'Hood',
     'Fender',
-    'Headlight Assembly',
-    'Tail Light',
-    'Radiator',
     'Front Bumper Assembly (includes cover)',
     'Rear Bumper Assembly (includes cover)',
     'Front Door (see also Door Shell, Front)',
-    'A/C Compressor',
+    'Rear Door (side-see also Door Shell, Rear)',
+    'Quarter Panel',
+    # Lighting
+    'Headlight Assembly',
+    'Tail Light',
+    # Suspension / Steering
+    'Spindle/Knuckle, Front',
+    'Control Arm, Front Upper',
+    'Control Arm, Front Lower',
+    'Strut/Shock, Front',
+    'Strut/Shock, Rear',
 ]
 
 
@@ -100,6 +118,22 @@ def _get_homepage_hidden_fields(session: requests.Session) -> dict:
             if name:
                 fields[name] = inp.get('value', '')
     return fields
+
+
+def _interchange_side(value: str) -> str | None:
+    """Return 'Left', 'Right', or None by reading the 3rd segment of an interchange value.
+
+    Car-Part.com encodes side as 'L' or 'R' in the third '}'-delimited segment.
+    Example: 'BD@C}B}L}120}1022564}HO' -> 'Left'
+    """
+    parts = value.split('}')
+    if len(parts) >= 3:
+        side_char = parts[2].strip().upper()
+        if side_char == 'L':
+            return 'Left'
+        if side_char == 'R':
+            return 'Right'
+    return None
 
 
 def _handle_interchange(
@@ -133,6 +167,64 @@ def _handle_interchange(
     resp = session.post(SEARCH_URL, data=data, timeout=30)
     resp.raise_for_status()
     return BeautifulSoup(resp.text, 'html.parser')
+
+
+def _handle_interchange_all_sides(
+    session: requests.Session, soup: BeautifulSoup, original_data: dict, part_name: str
+) -> list[tuple[str, BeautifulSoup]]:
+    """For interchange pages with LH/RH options, return results for both sides.
+
+    Returns a list of (labelled_part_name, soup) tuples — one per unique side found.
+    Falls back to [(part_name, soup)] if no side information is available.
+    """
+    radios = soup.find_all('input', {'type': 'radio'})
+    if not radios:
+        return [(part_name, soup)]
+
+    form = soup.find('form')
+    if not form:
+        return [(part_name, soup)]
+
+    base_data = dict(original_data) if original_data else {}
+    for inp in form.find_all('input', {'type': 'hidden'}):
+        name = inp.get('name', '')
+        if name:
+            base_data[name] = inp.get('value', '')
+
+    # Collect the first interchange value for each unique side
+    side_values = {}  # side -> (field_name, value)
+    no_side_first = None
+    for r in radios:
+        val = r.get('value', '')
+        name = r.get('name', 'userInterchange')
+        if not val or val == 'None':
+            continue
+        side = _interchange_side(val)
+        if side and side not in side_values:
+            side_values[side] = (name, val)
+        elif side is None and no_side_first is None:
+            no_side_first = (name, val)
+
+    if not side_values:
+        # No side info — fall back to single search with first option
+        if no_side_first:
+            data = dict(base_data)
+            data[no_side_first[0]] = no_side_first[1]
+            resp = session.post(SEARCH_URL, data=data, timeout=30)
+            resp.raise_for_status()
+            return [(part_name, BeautifulSoup(resp.text, 'html.parser'))]
+        return [(part_name, soup)]
+
+    results = []
+    for side, (field_name, val) in sorted(side_values.items()):
+        data = dict(base_data)
+        data[field_name] = val
+        resp = session.post(SEARCH_URL, data=data, timeout=30)
+        resp.raise_for_status()
+        labelled_name = f'{part_name} - {side}'
+        results.append((labelled_name, BeautifulSoup(resp.text, 'html.parser')))
+
+    return results
 
 
 def _parse_results_table(soup: BeautifulSoup, search_part: str) -> list[dict]:

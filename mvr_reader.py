@@ -200,12 +200,33 @@ class MVRReader:
                         return result
         return None
 
+    def _find_clickable_ancestor(self, vm, ctx):
+        """Walk up the JAB tree from ctx until we find a node with real screen coordinates."""
+        self.jab.getAccessibleParentFromContext.argtypes = [ctypes.c_long, ctypes.c_int64]
+        self.jab.getAccessibleParentFromContext.restype  = ctypes.c_int64
+        node = ctx
+        for _ in range(15):
+            parent = self.jab.getAccessibleParentFromContext(vm, node)
+            if not parent:
+                break
+            ci = AccessibleContextInfo()
+            if self.jab.getAccessibleContextInfo(vm, parent, ctypes.byref(ci)):
+                if ci.x > 0 and ci.y > 0 and ci.width > 0 and ci.height > 0:
+                    return parent, ci
+            node = parent
+        return None, None
+
     def _click_parts_tab(self, vm, ac):
-        """Click the 'Parts' tab in the MVR window."""
-        parts_node = self._find_node(vm, ac, role='label', name='Parts')
+        """Click the 'Parts' tab in the MVR window.
+
+        Swing tab labels report x=-1/y=-1 via JAB so we search without a
+        position requirement, then walk up to the first ancestor that has
+        real screen coordinates and click that instead.
+        """
+        # Search without requiring positive coordinates
+        parts_node = self._find_node(vm, ac, role='label', name='Parts', require_visible=False)
         if parts_node is None:
-            # Also try role='page tab' which Swing sometimes reports
-            parts_node = self._find_node(vm, ac, role='page tab', name='Parts')
+            parts_node = self._find_node(vm, ac, role='page tab', name='Parts', require_visible=False)
         if parts_node is None:
             raise RuntimeError(
                 'Could not find the "Parts" tab in the MVR window. '
@@ -214,14 +235,23 @@ class MVRReader:
 
         ci = AccessibleContextInfo()
         self.jab.getAccessibleContextInfo(vm, parts_node, ctypes.byref(ci))
-        x = ci.x + ci.width // 2
-        y = ci.y + ci.height // 2
+
+        # If the node itself has valid coords, use them; otherwise walk up
+        if ci.x > 0 and ci.y > 0:
+            x = ci.x + ci.width // 2
+            y = ci.y + ci.height // 2
+        else:
+            ancestor, aci = self._find_clickable_ancestor(vm, parts_node)
+            if ancestor is None:
+                raise RuntimeError('Could not determine screen coordinates for the "Parts" tab.')
+            x = aci.x + aci.width // 2
+            y = aci.y + aci.height // 2
 
         user32 = ctypes.windll.user32
         user32.SetCursorPos(x, y)
         user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN
         user32.mouse_event(0x0004, 0, 0, 0, 0)  # LEFTUP
-        time.sleep(1)  # wait for Parts tab to render
+        time.sleep(3)  # wait for Parts tab to render
 
     def _find_parts_table(self, vm, ac):
         """Recursively find the first visible table in the accessible tree."""
@@ -254,9 +284,14 @@ class MVRReader:
 
         self._click_parts_tab(vm, ac)
 
-        # Re-fetch context after tab click so the tree reflects the Parts panel
-        vm, ac = self._connect_jab(hwnd)
-        table_ctx = self._find_parts_table(vm, ac)
+        # Re-fetch context after tab click and retry until the table appears
+        table_ctx = None
+        for attempt in range(6):
+            vm, ac = self._connect_jab(hwnd)
+            table_ctx = self._find_parts_table(vm, ac)
+            if table_ctx:
+                break
+            time.sleep(2)
 
         if not table_ctx:
             raise RuntimeError(
