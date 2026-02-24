@@ -107,6 +107,7 @@ def decode_vin(driver: webdriver.Chrome, url: str, vin: str) -> dict:
         'engine_cylinders': r'Engine Cylinders:\s*(\d+)',
         'exterior_color': r'Exterior Color:\s*\n?\s*(.+)',
         'interior_color': r'Interior Color:\s*\n?\s*(.+)',
+        'curb_weight': r'Standard Curb Weight:\s*(.+)',
     }
 
     for key, pattern in field_patterns.items():
