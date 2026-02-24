@@ -64,13 +64,21 @@ _COLOR_SYNONYMS = {
 def _map_color(color: str) -> str:
     if not color:
         return ''
-    c = color.lower().strip()
+    # Strip leading manufacturer code: "10 - Light Gray" → "Light Gray"
+    cleaned = re.sub(r'^[A-Z0-9]{1,4}\s*-\s*', '', color.strip(), flags=re.IGNORECASE).strip()
+    c = (cleaned or color).lower()
+    # Exact match
     if c in _COLOR_DIRECT:
         return c.capitalize()
+    # Synonym match (e.g. "charcoal" → "Gray")
     for k, v in _COLOR_SYNONYMS.items():
         if k in c:
             return v
-    return color.split()[0].capitalize()
+    # Any direct color word present (longest first to prefer "maroon" over "red")
+    for direct in sorted(_COLOR_DIRECT, key=len, reverse=True):
+        if re.search(r'\b' + direct + r'\b', c):
+            return direct.capitalize()
+    return (cleaned or color).split()[0].capitalize()
 
 
 def _map_fuel(fuel: str) -> str:
