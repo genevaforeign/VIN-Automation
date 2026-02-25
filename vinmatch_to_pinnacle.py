@@ -55,6 +55,26 @@ def _extract_wheel_size(size: str) -> str:
     return m.group(1) if m else (size or '').strip()
 
 
+def _base_color(color: str) -> str:
+    """Return the first plain color word after stripping the manufacturer code.
+
+    'GW - CHARCOAL BLACK LEATHER'       → 'Black'
+    'UG - WHITE PLATINUM MET TRI-COAT'  → 'White'
+    'YZ - INGOT SILVER METALLIC'        → 'Silver'
+    '10 - LIGHT GRAY'                   → 'Gray'
+
+    Skips modifier words (CHARCOAL, PLATINUM, INGOT, LIGHT, etc.) and
+    returns the first word found in the standard color set.
+    """
+    cleaned = re.sub(r'^[A-Z0-9]{1,4}\s*-\s*', '', (color or '').strip(),
+                     flags=re.IGNORECASE).strip()
+    for word in cleaned.lower().split():
+        if word in _COLOR_DIRECT:
+            return word.capitalize()
+    # Fallback: first word of the cleaned string
+    return cleaned.split()[0].capitalize() if cleaned else (color or '')
+
+
 _COLOR_DIRECT = {
     'black', 'blue', 'brown', 'gold', 'green', 'gray', 'maroon',
     'orange', 'pink', 'purple', 'red', 'silver', 'tan', 'white', 'yellow',
@@ -141,6 +161,7 @@ def _map_drive(drive: str) -> str:
 
 _TRANSFORMERS = {
     'color':        _map_color,
+    'base_color':   _base_color,
     'code':         _extract_code,
     'displacement': _extract_displacement,
     'weight':       _extract_weight,

@@ -2,9 +2,12 @@ pinnacle_label,vmp_key,transformer
 # Vehicle header
 Trim Level:,trim,
 # Colors / trim codes
-Interior Color:,interior_color,color
+# base_color = first plain color word after stripping manufacturer code
+#   e.g. "GW - CHARCOAL BLACK LEATHER" → Black
+#        "UG - WHITE PLATINUM MET TRI-COAT" → White
+Interior Color:,interior_color,base_color
 Interior Trim Code:,interior_color,code
-External Color Code:,exterior_color,code
+External Color Code:,exterior_color,base_color
 # Measurements
 Weight:,curb_weight,weight
 Wheel Size:,wheel_size,wheel
