@@ -238,16 +238,6 @@ def _send_vk(vk: int, delay: float = 0.05):
     time.sleep(delay)
 
 
-def _open_combo():
-    """Open a focused JComboBox dropdown with Alt+Down."""
-    user32 = ctypes.windll.user32
-    VK_MENU, VK_DOWN = 0x12, 0x28
-    user32.keybd_event(VK_MENU, 0, 0, 0)
-    user32.keybd_event(VK_DOWN, 0, 0, 0)
-    user32.keybd_event(VK_DOWN, 0, 0x0002, 0)
-    user32.keybd_event(VK_MENU, 0, 0x0002, 0)
-    time.sleep(0.5)   # give Swing time to render the popup
-
 
 def _type_unicode(text: str):
     """Send text as Unicode keyboard input via SendInput."""
@@ -440,34 +430,80 @@ class MVRWriter:
         return []
 
     def _set_combo_keyboard(self, field: dict, value: str) -> bool:
-        """Select a combo option by opening the dropdown and typing to navigate.
+        """Select a combo option by clicking the dropdown and then clicking the target item.
 
-        Swing's incremental-search (prefix matching) in an open JList lets us
-        type the first characters of the target option to jump directly to it.
-        No need to enumerate options; works even with lazy-loaded item lists.
+        Clicks the combo's dropdown arrow to open the popup, then scans the
+        JAB accessibility tree for list items and clicks the matching one
+        directly.  Falls back to keyboard prefix-typing only if JAB cannot
+        find any expanded list items (e.g. heavyweight popup in a separate window).
         """
-        cx = field['x'] + field['w'] // 2
-        cy = field['y'] + field['h'] // 2
+        fx, fy, fw, fh = field['x'], field['y'], field['w'], field['h']
+        cx = fx + fw // 2
+        cy = fy + fh // 2
+        val_lower = value.lower().strip()
 
-        # 1. Click to focus the combo
         ctypes.windll.user32.SetForegroundWindow(self._hwnd)
-        _click(cx, cy, delay=0.25)
+        time.sleep(0.1)
 
-        # 2. Open the dropdown with Alt+Down
-        _open_combo()
+        # 1. Click the dropdown-arrow at the right edge of the combo to open it.
+        #    This avoids sending Alt/keyboard events that can trigger Pinnacle's
+        #    menus or navigate to a different record.
+        _click(fx + fw - 6, cy, delay=0.5)
 
-        # 3. Type the first 5 characters of the target value.
-        #    In an open Swing JList, successive key presses within ~1 second
-        #    do prefix matching (e.g. 'G','r' → selects "Gray" over "Gold").
-        #    Use uppercase VK codes (A-Z: 0x41-0x5A, 0-9: 0x30-0x39).
+        # 2. Scan JAB for list items.  Pinnacle uses heavyweight combo popups
+        #    (separate SunAwtWindow OS windows), so we must enumerate ALL Java
+        #    windows and search each one for list items.
+        items = []
+        desktop = Desktop(backend='uia')
+        for w in desktop.windows():
+            try:
+                if 'SunAwtWindow' not in w.element_info.class_name:
+                    continue
+                popup_hwnd = w.handle
+                vm2, ac2 = self._connect(popup_hwnd)
+                self._collect_nodes(vm2, ac2, {'list item'}, items)
+                if items:
+                    break
+            except Exception:
+                continue
+        # Also try the main frame in case the popup is lightweight
+        if not items:
+            vm2, ac2 = self._connect(self._hwnd)
+            self._collect_nodes(vm2, ac2, {'list item'}, items)
+
+        clicked = False
+
+        # Exact name match
+        for item in items:
+            if item['name'].lower().strip() == val_lower:
+                _click(item['x'] + item['w'] // 2, item['y'] + item['h'] // 2,
+                       delay=0.15)
+                clicked = True
+                break
+
+        # Prefix match (first 4 characters) if no exact match
+        if not clicked:
+            for item in items:
+                if item['name'].lower().strip().startswith(val_lower[:4]):
+                    _click(item['x'] + item['w'] // 2, item['y'] + item['h'] // 2,
+                           delay=0.15)
+                    clicked = True
+                    break
+
+        if clicked:
+            return True
+
+        # 3. Fallback: JAB list scan found nothing (heavyweight popup).
+        #    The popup is ALREADY OPEN from the click above — do NOT close and
+        #    reopen with Alt+Down (Alt can trigger Pinnacle's menu bar and
+        #    navigate to a different record).  Just type into the open popup.
         for ch in value[:5].upper():
             code = ord(ch)
             if (0x41 <= code <= 0x5A) or (0x30 <= code <= 0x39):
                 _send_vk(code, delay=0.08)
 
-        # 4. Confirm selection with Enter
         time.sleep(0.1)
-        _send_vk(0x0D)   # VK_RETURN
+        _send_vk(0x0D)   # VK_RETURN — confirm selection
         time.sleep(0.1)
 
         return True
