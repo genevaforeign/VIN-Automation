@@ -99,15 +99,17 @@ def decode_vin(driver: webdriver.Chrome, url: str, vin: str) -> dict:
 
     # Parse key:value pairs from the page text
     field_patterns = {
-        'body_style': r'Body Type:\s*(.+)',
-        'drive_type': r'Drive Type:\s*(.+)',
-        'fuel_type': r'Fuel Type:\s*(.+)',
-        'fuel_economy': r'Fuel Economy \(City/Highway/Combined\):\s*(.+)',
-        'fuel_tank': r'Fuel Tank Capacity:\s*(.+)',
-        'engine_cylinders': r'Engine Cylinders:\s*(\d+)',
-        'exterior_color': r'Exterior Color:\s*\n?\s*(.+)',
-        'interior_color': r'Interior Color:\s*\n?\s*(.+)',
-        'curb_weight': r'Standard Curb Weight:\s*(.+)',
+        'body_style':        r'Body Type:\s*(.+)',
+        'drive_type':        r'Drive Type:\s*(.+)',
+        'fuel_type':         r'Fuel Type:\s*(.+)',
+        'fuel_economy':      r'Fuel Economy \(City/Highway/Combined\):\s*(.+)',
+        'fuel_tank':         r'Fuel Tank Capacity:\s*(.+)',
+        'engine_cylinders':  r'Engine Cylinders:\s*(\d+)',
+        'exterior_color':    r'Exterior Color:\s*\n?\s*(.+)',
+        'interior_color':    r'Interior Color:\s*\n?\s*(.+)',
+        'curb_weight':       r'Standard Curb Weight:\s*(.+)',
+        'transmission_type': r'Transmission Type:\s*(.+)',
+        'wheel_size':        r'Front Tire Diameter:\s*([\d.]+)',
     }
 
     for key, pattern in field_patterns.items():
@@ -139,6 +141,27 @@ def decode_vin(driver: webdriver.Chrome, url: str, vin: str) -> dict:
             axle_val = lines[i + 1].strip()
             if axle_val and axle_val != 'Copy':
                 vehicle['axle_ratio'] = axle_val
+            break
+
+    # Use clean "Transmission Type:" when available — overrides raw description.
+    # Must happen AFTER the raw Transmission: parse loop above.
+    tt = vehicle.get('transmission_type', '').strip()
+    if tt in ('Automatic', 'Manual', 'CVT'):
+        vehicle['transmission'] = tt
+
+    # Detect roof type by matching feature-heading lines (e.g. "First Row Sunroof:")
+    # Use line-start anchored search so "Fob Sunroof Controls" doesn't trigger Sunroof.
+    _roof_patterns = [
+        (r'(?m)^Panoramic Roof:',   'Panoramic'),
+        (r'(?m)^Convertible Roof:', 'Convertible'),
+        (r'(?m)^Removable Roof:',   'T-Top'),
+        (r'(?m)^Moonroof:',         'Moonroof'),
+        (r'(?m)^First Row Sunroof:', 'Sunroof'),
+        (r'(?m)^Sunroof:',          'Sunroof'),
+    ]
+    for pattern, rtype in _roof_patterns:
+        if re.search(pattern, body_text, re.IGNORECASE):
+            vehicle['roof_type'] = rtype
             break
 
     if not vehicle.get('year'):

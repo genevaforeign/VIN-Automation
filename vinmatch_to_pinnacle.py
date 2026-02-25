@@ -47,6 +47,12 @@ def _extract_weight(weight: str) -> str:
     return m.group(1).replace(',', '') if m else (weight or '').strip()
 
 
+def _extract_wheel_size(size: str) -> str:
+    """'18.0' → '18'"""
+    m = re.match(r'(\d+)', (size or '').strip())
+    return m.group(1) if m else (size or '').strip()
+
+
 _COLOR_DIRECT = {
     'black', 'blue', 'brown', 'gold', 'green', 'gray', 'maroon',
     'orange', 'pink', 'purple', 'red', 'silver', 'tan', 'white', 'yellow',
@@ -74,8 +80,11 @@ def _map_color(color: str) -> str:
     for k, v in _COLOR_SYNONYMS.items():
         if k in c:
             return v
-    # Any direct color word present (longest first to prefer "maroon" over "red")
-    for direct in sorted(_COLOR_DIRECT, key=len, reverse=True):
+    # Any common color word present — skip unusual/ambiguous ones used in trim names
+    # (e.g. "Yellow Stone" should NOT match yellow; it should fall through to first word)
+    _SAFE_COLORS = {'black', 'white', 'silver', 'gray', 'red', 'blue', 'green',
+                    'brown', 'maroon', 'gold', 'tan', 'orange', 'purple'}
+    for direct in sorted(_SAFE_COLORS, key=len, reverse=True):
         if re.search(r'\b' + direct + r'\b', c):
             return direct.capitalize()
     return (cleaned or color).split()[0].capitalize()
@@ -133,6 +142,8 @@ _FIELD_MAP = {
     'Axle Code:':            ('axle_ratio',        None),
     'External Color Code:':  ('exterior_color',   _extract_code),
     'Weight:':               ('curb_weight',       _extract_weight),
+    'Wheel Size:':           ('wheel_size',        _extract_wheel_size),
+    'Roof Type':             ('roof_type',         None),   # no colon — Pinnacle label quirk
     'Engine Size:':          ('engine',            _extract_displacement),
     'Number Cylinders:':     ('engine_cylinders',  None),
     'Fuel Type:':            ('fuel_type',         _map_fuel),
@@ -181,7 +192,7 @@ def _open_combo():
     user32.keybd_event(VK_DOWN, 0, 0, 0)
     user32.keybd_event(VK_DOWN, 0, 0x0002, 0)
     user32.keybd_event(VK_MENU, 0, 0x0002, 0)
-    time.sleep(0.35)
+    time.sleep(0.5)   # give Swing time to render the popup
 
 
 def _type_unicode(text: str):
@@ -597,6 +608,8 @@ def main():
     print(f'  Cylinders:    {vehicle.get("engine_cylinders","--")}')
     print(f'  Axle ratio:   {vehicle.get("axle_ratio","--")}')
     print(f'  Weight:       {vehicle.get("curb_weight","--")}')
+    print(f'  Wheel size:   {vehicle.get("wheel_size","--")}')
+    print(f'  Roof type:    {vehicle.get("roof_type","--")}')
 
     if args.dry_run:
         print('\n[DRY RUN] Fields that would be written:')
