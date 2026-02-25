@@ -8,8 +8,10 @@ Usage:
 """
 
 import argparse
+import csv
 import ctypes
 import ctypes.wintypes as wintypes
+import os
 import re
 import sys
 import time
@@ -133,23 +135,54 @@ def _map_drive(drive: str) -> str:
     return drive
 
 
-# Pinnacle label name → (VINMatchPro key, transformer)
-# Label names must match exactly as seen in the JAB accessibility tree
-_FIELD_MAP = {
-    'Trim Level:':           ('trim',             None),
-    'Interior Color:':       ('interior_color',   _map_color),
-    'Interior Trim Code:':   ('interior_color',   _extract_code),
-    'Axle Code:':            ('axle_ratio',        None),
-    'External Color Code:':  ('exterior_color',   _extract_code),
-    'Weight:':               ('curb_weight',       _extract_weight),
-    'Wheel Size:':           ('wheel_size',        _extract_wheel_size),
-    'Roof Type':             ('roof_type',         None),   # no colon — Pinnacle label quirk
-    'Engine Size:':          ('engine',            _extract_displacement),
-    'Number Cylinders:':     ('engine_cylinders',  None),
-    'Fuel Type:':            ('fuel_type',         _map_fuel),
-    'Transmission:':         ('transmission',      _map_transmission),
-    'Drive:':                ('drive_type',        _map_drive),
+# ─────────────────────────────────────────────────────────────
+# Named transformer registry — referenced by name in field_map.csv
+# ─────────────────────────────────────────────────────────────
+
+_TRANSFORMERS = {
+    'color':        _map_color,
+    'code':         _extract_code,
+    'displacement': _extract_displacement,
+    'weight':       _extract_weight,
+    'wheel':        _extract_wheel_size,
+    'fuel':         _map_fuel,
+    'transmission': _map_transmission,
+    'drive':        _map_drive,
 }
+
+
+def _load_field_map(csv_path: str = None) -> dict:
+    """Load field_map.csv → {pinnacle_label: (vmp_key, transformer_fn | None)}.
+
+    CSV format (lines starting with # are comments):
+        pinnacle_label,vmp_key,transformer
+        Trim Level:,trim,
+        Interior Color:,interior_color,color
+    """
+    if csv_path is None:
+        csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'field_map.csv')
+
+    field_map = {}
+    with open(csv_path, newline='', encoding='utf-8') as fh:
+        reader = csv.reader(fh)
+        for row in reader:
+            if not row or row[0].startswith('#'):
+                continue
+            if row[0].strip().lower() == 'pinnacle_label':
+                continue  # header row
+            if len(row) < 2:
+                continue
+            label       = row[0].strip()
+            vmp_key     = row[1].strip()
+            transformer_name = row[2].strip() if len(row) > 2 else ''
+            transformer = _TRANSFORMERS.get(transformer_name) if transformer_name else None
+            if label and vmp_key:
+                field_map[label] = (vmp_key, transformer)
+    return field_map
+
+
+# Loaded once at import time; can be reloaded by calling _load_field_map() again.
+_FIELD_MAP = _load_field_map()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -472,9 +505,37 @@ class MVRWriter:
         self._hwnd = self._find_mvr_hwnd()
         vm, ac = self._connect(self._hwnd)
 
-        # ── Enter edit mode ───────────────────────────────────────
+        # ── Ensure vehicle detail panel is visible ────────────────
+        # Check for a key vehicle-detail label before entering edit mode.
+        # If not visible (x == 0), click Default Layout to restore the
+        # standard workspace, then verify.
+        def _detail_visible(vm_id, ac_val):
+            """Return True if the vehicle detail panel is on-screen."""
+            probe_ctx = self._find_node(vm_id, ac_val, role='label', name='Trim Level:')
+            if not probe_ctx:
+                return False
+            ci = AccessibleContextInfo()
+            if not self.jab.getAccessibleContextInfo(vm_id, probe_ctx, ctypes.byref(ci)):
+                return False
+            return ci.x > 0
+
         ctypes.windll.user32.SetForegroundWindow(self._hwnd)
         time.sleep(0.3)
+
+        if not _detail_visible(vm, ac):
+            # The MVR is showing a different tab (e.g. Summary, Parts).
+            # Find the "Detail" tab label and click it to switch views.
+            detail_tab = self._find_node(vm, ac, role='label', name='Detail')
+            if detail_tab:
+                ci = AccessibleContextInfo()
+                if self.jab.getAccessibleContextInfo(vm, detail_tab, ctypes.byref(ci)) and ci.x > 0:
+                    print('  Switching to Detail tab...')
+                    _click(ci.x + ci.width // 2, ci.y + ci.height // 2, delay=0.5)
+                    vm, ac = self._connect(self._hwnd)
+            if not _detail_visible(vm, ac):
+                print('  WARNING: vehicle detail panel still not visible.')
+
+        # ── Enter edit mode ───────────────────────────────────────
         print('  Clicking Edit...')
         self._click_button(vm, ac, 'Edit')
         time.sleep(3.0)
@@ -482,11 +543,10 @@ class MVRWriter:
         # Re-connect after edit mode activates
         vm, ac = self._connect(self._hwnd)
 
-        # ── Step C: collect field positions in edit mode ──────────
-        labels = []
-        fields = []
-        self._collect_nodes(vm, ac, {'label'},              labels)
-        self._collect_nodes(vm, ac, {'text', 'combo box'},  fields)
+        # ── Collect field positions in edit mode ──────────────────
+        labels, fields = [], []
+        self._collect_nodes(vm, ac, {'label'},             labels)
+        self._collect_nodes(vm, ac, {'text', 'combo box'}, fields)
         fields = [f for f in fields if f['x'] > 0]
 
         print(f'  Found {len(labels)} labels, {len(fields)} fields in edit mode.')

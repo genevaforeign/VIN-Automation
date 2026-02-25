@@ -1,0 +1,20 @@
+pinnacle_label,vmp_key,transformer
+# Vehicle header
+Trim Level:,trim,
+# Colors / trim codes
+Interior Color:,interior_color,color
+Interior Trim Code:,interior_color,code
+External Color Code:,exterior_color,code
+# Measurements
+Weight:,curb_weight,weight
+Wheel Size:,wheel_size,wheel
+Axle Code:,axle_ratio,
+# Roof
+Roof Type,roof_type,
+# Engine
+Engine Size:,engine,displacement
+Number Cylinders:,engine_cylinders,
+# Drivetrain combos
+Fuel Type:,fuel_type,fuel
+Transmission:,transmission,transmission
+Drive:,drive_type,drive
